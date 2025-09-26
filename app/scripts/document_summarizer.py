@@ -1,6 +1,5 @@
-# app/scripts/document_summarizer.py
-
 import os
+import re
 import time
 import fitz  # PyMuPDF for PDFs
 import docx
@@ -27,7 +26,7 @@ def read_pdf(path: str) -> str:
     text = ""
     with fitz.open(path) as doc:
         for page in doc:
-            text += page.get_text() + "\n"
+            text += page.get_text("text") + "\n"
     return text
 
 
@@ -54,14 +53,34 @@ def read_document(path: str) -> str:
 
 
 # =========================
-# Text chunking
+# Hybrid Section Detection
 # =========================
-def chunk_text(text: str, max_words: int = 500) -> list:
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), max_words):
-        chunks.append(" ".join(words[i:i + max_words]))
-    return chunks
+def split_into_sections(text: str) -> list:
+    """
+    Split text into sections using headings or spacing.
+    """
+    pattern = re.compile(r'(^[A-Z][A-Z\s]{2,}:?$)', re.MULTILINE)
+    splits = pattern.split(text)
+    
+    sections = []
+    if splits:
+        current_heading = "Introduction"
+        buffer = ""
+        for part in splits:
+            part = part.strip()
+            if pattern.match(part):
+                if buffer:
+                    sections.append((current_heading, buffer.strip()))
+                current_heading = part
+                buffer = ""
+            else:
+                buffer += part + "\n"
+        if buffer:
+            sections.append((current_heading, buffer.strip()))
+    else:
+        raw_sections = text.split("\n\n")
+        sections = [(f"Section {i+1}", sec.strip()) for i, sec in enumerate(raw_sections)]
+    return sections
 
 
 # =========================
@@ -78,14 +97,21 @@ def switch_to_next_key():
     return False
 
 
-def summarize_chunk(chunk: str, retries: int = 3, delay: int = 5) -> str:
+def summarize_section(section_text: str, retries: int = 3, delay: int = 5) -> str:
+    
+    if len(section_text.strip().split()) < 10:
+        return ""
+    
     prompt = f"""
-You are an expert summarizer. Summarize the following text clearly:
-- Highlight key points, actions, responsibilities, and deadlines
-- Provide concise bullet points
+You are an expert summarizer. Summarize the following document or section clearly and professionally:
+- Highlight key points, actions, responsibilities, deadlines, and important details.
+- Include concise bullet points where appropriate.
+- Preserve context and meaning; do not invent facts.
+- Adapt style to the type of document (resume, HR, technical, or general business).
+- Keep the summary readable and structured.
 
-Text:
-{chunk}
+Document/Section content:
+{section_text}
 """
     for attempt in range(retries):
         try:
@@ -108,48 +134,45 @@ Text:
         except Exception as e:
             if "quota" in str(e).lower() and switch_to_next_key():
                 continue
-            print(f"❌ Error in summarize_chunk: {e}")
+            print(f"❌ Error in summarize_section: {e}")
         time.sleep(delay)
     return "⚠️ Summary failed after retries."
 
 
 # =========================
-# Summarize text (used by main.py)
+# Hybrid Section-aware Summarization
 # =========================
-def summarize_text_in_batches(text: str, chunk_size: int = 500) -> str:
-    chunks = chunk_text(text, max_words=chunk_size)
-    print(f"📝 Total chunks: {len(chunks)}")
+def summarize_text_by_sections(text: str) -> str:
+    sections = split_into_sections(text)
+    section_summaries = []
+    for heading, content in sections:
+        print(f"📝 Summarizing section: {heading}")
+        summary = summarize_section(content)
+        section_summaries.append(f"## {heading}\n{summary}\n")
+    
+    merged_summary = "\n".join(section_summaries)
 
-    chunk_summaries = []
-    for idx, chunk in enumerate(chunks):
-        print(f"📝 Summarizing chunk {idx + 1}")
-        chunk_summary = summarize_chunk(chunk)
-        chunk_summaries.append(chunk_summary)
-
-    merged_summary = "\n".join(chunk_summaries)
-
-    # Final summarization pass
     final_prompt = f"""
-You are an expert policy summarizer. I will provide you with a document or partial summaries of a document. Your task is to create a detailed, professional, and well-structured summary with up to 100 lines.  
+You are an expert summarizer. Using the section-wise summaries provided below,
+create a professional, concise, and well-structured final summary in approximately 200 words.
 
 Guidelines:
-- Begin with a clear policy title and identifier (if available).
-- Provide an overview section.
-- Highlight key features, benefits, and scope of the policy.
-- Break down inclusions, exclusions, claim limits, incentives, and eligibility.
-- Include a section for preventive care (such as vaccinations, check-ups, etc.).
-- Expand into 10–15 sections, each with bullet points or short paragraphs.
-- Keep the tone professional, precise, and comprehensive.
-- Ensure the output reads like an official summarized report, not just a short abstract.
-- If the original text is incomplete or limited, fill in gaps logically and clearly indicate assumptions.
-Here is the input text/summaries:
+- Read all section summaries carefully.
+- Preserve the logical flow and order of sections.
+- Include key points, actions, responsibilities, deadlines, and incentives.
+- Highlight important inclusions, exclusions, claim limits, benefits, and preventive care.
+- Merge redundant points and remove trivial information for clarity.
+- Maintain a precise, professional, and readable style suitable for an official report.
+- Avoid introducing incorrect facts; clearly indicate assumptions only if necessary.
+- Produce a cohesive summary that captures the essence of the entire document, not just bullet points.
 
+Section-wise summaries:
 {merged_summary}
 """
     try:
         final_response = gemini_model.generate_content(
             contents=[{"role": "user", "parts": [final_prompt]}],
-            generation_config={"temperature": 0.3, "top_p": 0.8, "max_output_tokens": 800}
+            generation_config={"temperature":0.3, "top_p":0.8, "max_output_tokens":800}
         )
         final_summary = ""
         if hasattr(final_response, "candidates") and final_response.candidates:
@@ -165,15 +188,15 @@ Here is the input text/summaries:
 
 
 # =========================
-# Summarize document (file path)
+# Summarize Document
 # =========================
-def summarize_document(path: str, chunk_size: int = 500) -> str:
+def summarize_document(path: str) -> str:
     text = read_document(path)
-    return summarize_text_in_batches(text, chunk_size=chunk_size)
+    return summarize_text_by_sections(text)
 
 
 # =========================
-# Save summary
+# Save Summary
 # =========================
 def save_summary(summary_text: str, base_filename: str, output_folder: str) -> str:
     os.makedirs(output_folder, exist_ok=True)
