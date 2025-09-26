@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.scripts.extraction import extract_file
-from app.scripts.document_summarizer import summarize_text_in_batches, save_summary
+from app.scripts.document_summarizer import summarize_text_by_sections, save_summary
 
 
 from app.scripts.ingestion import ingest_files
@@ -55,7 +55,7 @@ async def upload_file(file: UploadFile = File(...)):
         f.write(text)
 
     # Summarize using Gemini Flash 2.5 (batching)
-    summary_text = summarize_text_in_batches(text)
+    summary_text = summarize_text_by_sections(text)
     summary_path = save_summary(summary_text, os.path.splitext(file.filename)[0], SUMMARY_FOLDER)
 
     return {"processed_text": processed_path, "summary_file": summary_path}
@@ -89,7 +89,7 @@ def upload_url(doc: DocumentURL):
         f.write(text)
 
     # Summarize in batches
-    summary_text = summarize_text_in_batches(text)
+    summary_text = summarize_text_by_sections(text)
     summary_path = save_summary(summary_text, os.path.splitext(filename)[0], SUMMARY_FOLDER)
 
     return {"processed_text": processed_path, "summary_file": summary_path}
